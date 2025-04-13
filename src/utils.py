@@ -5,7 +5,7 @@ import requests
 from bs4 import BeautifulSoup
 
 def get_models():
-    soup = BeautifulSoup(requests.get('https://ollama.com/library?sort=popular').text)
+    soup = BeautifulSoup(requests.get('https://ollama.com/library?sort=popular').text, features='html.parser')
 
     popular_models = [h2.text.strip() for h2 in soup.find_all("h2")]
     popular_models = [m for m in popular_models if m]
@@ -18,9 +18,7 @@ def get_tags(model):
 
     response = requests.get(f'https://ollama.com/library/{model}/tags')
     response.raise_for_status()
-    soup = BeautifulSoup(
-        response.text,
-    )
+    soup = BeautifulSoup(response.text, features='html.parser')
     for a in soup.find_all('a'):
         if not a['href'].startswith(f'/library/{model}:'):
             continue
@@ -28,8 +26,9 @@ def get_tags(model):
 
     return model_tags
 
-def scrape_ollama_model(url):
+def scrape_ollama_model(model):
     # Send a GET request to the page
+    url = f'https://ollama.com/library/{model}'
     headers = {'User-Agent': 'Mozilla/5.0'}
     response = requests.get(url, headers=headers)
     
@@ -38,7 +37,7 @@ def scrape_ollama_model(url):
         return
     
     # Parse the page content
-    soup = BeautifulSoup(response.text, 'html.parser')
+    soup = BeautifulSoup(response.text, features='html.parser')
     
     # Extract relevant data (Modify selectors based on actual page structure)
     title = soup.find('h1').get_text(strip=True) if soup.find('h1') else 'No title found'

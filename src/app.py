@@ -6,10 +6,14 @@ import re
 from PIL import Image, ImageOps
 from io import BytesIO
 import pandas as pd
+import json
+import sqlite3 as lite
+from urllib.request import pathname2url
 
 from prompts import system_prompt_ea, system_prompt_ca
 from utils import get_models, get_tags, scrape_ollama_model
 from enums import ModelType
+from models import Type
 
 st.set_page_config(page_title='Pixie', layout='wide')
 
@@ -57,43 +61,159 @@ st.markdown(
             """,
             unsafe_allow_html=True)
 
-models = [model['model'] for model in ollama.list()['models']]
-embedding_models = ['nomic-embed-text']
-reasoning_models = ['deepseek-r1']
-vision_models = ['llama3.2-vision', 'llava']
-base_llm = 'llama3.1:8b'
+models = sorted([model['model'] for model in ollama.list()['models']])
+if 'base_llm' not in ss:
+    ss.base_llm = 'llama3.1:8b'
+ss.db = {'model_repo': 'model_repository.db'}
+
+if 'model_repository' not in ss:
+    # Intialize Repository
+    ss['model_repository'] = {}
+    ss.model_repository[ModelType.REASON] = []
+    ss.model_repository[ModelType.CHAT] = []
+    ss.model_repository[ModelType.EMBED] = []
+    ss.model_repository[ModelType.VISION] = []
+    try:
+        conn = lite.connect(f'file:{ss.db['model_repo']}?mode=rw', uri=True)
+        cursor = conn.cursor()
+        cursor.execute('SELECT * FROM models')
+        models_ = cursor.fetchall()
+
+        for model_, type_ in models_:
+            ss.model_repository[ModelType(type_)].append(model_)
+
+    except lite.OperationalError:
+        # Create Repository
+        conn = lite.connect(ss.db['model_repo'])
+        cursor = conn.cursor()
+        cursor.execute('''CREATE TABLE IF NOT EXISTS models (model TEXT, type TEXT)''')
+        ss.model_repository[ModelType.REASON] = []
+        ss.model_repository[ModelType.CHAT] = []
+        ss.model_repository[ModelType.EMBED] = []
+        ss.model_repository[ModelType.VISION] = []
+
+        with st.spinner('Creating Model Repository...', show_time=True):
+
+            for model in models:
+                summary = scrape_ollama_model(model)
+                model_type = ollama.chat(model=ss.base_llm, 
+                                        messages=[{'role': 'system', 
+                                                    'content': 'Pick the correct type of model based on description'},
+                                                    {'role':'user',
+                                                    'content':summary}],
+                                        format=Type.model_json_schema())['message']['content']
+                model_type = ModelType(json.loads(model_type)['model_type'])
+                ss.model_repository[ModelType(model_type)].append(model.split(':')[0])
+                cursor.execute(f"INSERT INTO models (model, type) VALUES ('{model.split(':')[0]}', '{model_type.value}')")
+        conn.commit()
+        conn.close()
+
+def update_db():
+    conn = lite.connect(f'file:{ss.db['model_repo']}?mode=rw', uri=True)
+    cursor = conn.cursor()
+    cursor.execute('''DROP TABLE IF EXISTS models''')
+    cursor.execute('''CREATE TABLE models (model TEXT, type TEXT)''')
+    for model_type, model_families in ss.model_repository.items():
+        for model_family in model_families:
+            cursor.execute(f"INSERT INTO models (model, type) VALUES ('{model_family}', '{model_type.value}')")
+    conn.commit()
+    conn.close()
+
 
 with st.sidebar.popover('Manage Models'):
-    model = st.selectbox('Model', options=get_models())
-    tag = st.selectbox('Tag', options=get_tags(model))
+    model_family = st.selectbox('Model', options=get_models())
+    tag = st.selectbox('Tag', options=get_tags(model_family))
     c1, c2 = st.columns([1, 3])
-    if c1.button('Pull'):
-        if tag in models:
-            with st.warning('This model already exists!') as _:
-                time.sleep(1)
-                st.empty()
-        else:
-            with st.spinner('Pulling model...', show_time=True):
-                result =  ollama.pull(tag)
-            if result['status'] == 'success': 
-                st.success('Done!')
-                st.rerun()
-            else:
-                st.markdown('Error!')
-    if c2.button('Remove'):
-        if tag not in models:
-            with st.warning('This model is not downloaded!') as _:
-                time.sleep(1)
-                st.empty()
-        else:
-            with st.spinner('Pulling model...', show_time=True):
-                result =  ollama.delete(tag)
-            if result['status'] == 'success': 
-                st.success('Done!')
-                st.rerun()
-            else:
-                st.markdown('Error!')
+    if c1.button('Pull', disabled=tag in models):
+        with st.spinner('Pulling model...', show_time=True):
+            result =  ollama.pull(tag)
+        if result['status'] == 'success':
+            add_to_repository = True
 
+            for model_type_, model_families in ss.model_repository.items():
+                if model_family in model_families:
+                    add_to_repository = False
+                    break
+            
+            if add_to_repository:
+                summary = scrape_ollama_model(tag)
+                model_type = ollama.chat(model=ss.base_llm, 
+                                        messages=[{'role': 'system', 
+                                                    'content': 'Pick the correct type of model based on description'},
+                                                    {'role':'user',
+                                                    'content':summary}],
+                                        format=Type.model_json_schema())['message']['content']
+                
+                model_type = ModelType(json.loads(model_type)['model_type'])
+                if model_family not in ss.model_repository[model_type]:
+                    ss.model_repository[model_type].append(model_family)
+
+            update_db()
+            st.success('Done!')
+            st.rerun()
+        else:
+            st.markdown('Error!')
+    if c2.button('Remove', disabled=tag not in models):
+        with st.spinner('Removing model...', show_time=True):
+            result =  ollama.delete(tag)
+        if result['status'] == 'success': 
+
+            remove_from_repository = True
+            model_family = tag.split(':')[0]
+
+            for downloaded_model in ollama.list()['models']:
+                if model_family == downloaded_model['model'].split(':')[0]:
+                    remove_from_repository = False
+                    break
+
+            if remove_from_repository:
+                model_type = None
+
+                for model_type_, model_families in ss.model_repository.items():
+                    if model_family in model_families:
+                        model_type = model_type_
+                        break
+                ss.model_repository[model_type].remove(model_family)
+
+            update_db()
+            st.success('Done!')
+            st.rerun()
+        else:
+            st.markdown('Error!')
+
+    st.divider()
+
+    chat_models = []
+    for model_family in ss.model_repository[ModelType.CHAT]:
+        for candidate in models:
+            if candidate[:len(model_family)] == model_family:
+                chat_models.append(candidate)
+
+    st.selectbox(label='Base LLM', options=chat_models, index=chat_models.index(ss.base_llm), key='base_llm')
+
+    rows = []
+    for model_type, available_models in ss.model_repository.items():
+        for model in list(set(available_models)):
+            rows.append({'Model': model, 'Type': model_type.value})
+    
+    df = pd.DataFrame(rows)
+    df['Type'] = pd.Categorical(df['Type'], categories=[mt.value for mt in ModelType])
+    df.sort_values(by='Model', inplace=True)
+
+    edited_df = st.data_editor(df, hide_index=True, use_container_width=True)
+
+    model_repository = {}
+    model_repository[ModelType.REASON] = []
+    model_repository[ModelType.CHAT] = []
+    model_repository[ModelType.EMBED] = []
+    model_repository[ModelType.VISION] = []
+
+    for model_type in list(set(list(edited_df['Type']))):
+        model_repository[ModelType(model_type)] = list(edited_df[edited_df['Type'] == model_type]['Model'])
+    
+    if ss.model_repository != model_repository:
+        ss.model_repository = model_repository
+        update_db()
 
 model = st.sidebar.selectbox('Choose a model', models, index=0)
 
@@ -112,7 +232,7 @@ def refresh(context_name='New Chat'):
 def name_context(messages):
     messages = messages + [{'role': 'user', 
                             'content': 'Generate a title for this conversation under 3 words. Do not return anything else.'}]
-    return ollama.chat(model=base_llm, messages=messages)['message']['content']
+    return ollama.chat(model=ss.base_llm, messages=messages)['message']['content']
 
 def context_switch(context_name:str):
 
@@ -122,27 +242,20 @@ def context_switch(context_name:str):
         st.session_state.active_context = context_name
 
 def new_context():
-    # TODO: Save Old Context
-    if not private:
-        messages = [message for message in ss[model][ss.active_context]['messages'] if message['role'] in ['user', 'assistant']]
-        image = ss[model][ss.active_context].get('image', None)
-        if len(messages) > 0:
-            context_name = name_context(messages)
-            ss[model][context_name]= {'messages': messages}
-            if image:
-                ss[model][context_name]['image'] = image
+    # Save Old Context
+    messages = [message for message in ss[model][ss.active_context]['messages'] if message['role'] in ['user', 'assistant']]
+    image = ss[model][ss.active_context].get('image', None)
+    if len(messages) > 0:
+        context_name = name_context(messages)
+        ss[model][context_name]= {'messages': messages}
+        if image:
+            ss[model][context_name]['image'] = image
 
     # Create New Context
     refresh('New Chat')
     context_switch('New Chat')
 
 c1, c2, c3 = st.columns([14,2,1])
-
-c2.text('')
-c2.text('')
-c2.text('')
-c2.text('')
-private = c2.toggle('Private')
 
 c3.text('')
 c3.text('')
@@ -151,21 +264,21 @@ c3.text('')
 c3.button('♻️', type='tertiary', on_click=new_context)
 
 # Styling
-if model.split(':')[0] in embedding_models:
+if model.split(':')[0] in ss.model_repository[ModelType.EMBED]:
     model_type = ModelType.EMBED
     file_types = None
     c1.markdown(
-                "<span class='my-title-font'>Pixie</span> <span class='embed'>Embed</span> <br> <span class='author'>by Suprateem Banerjee</span>",
+                "<span class='my-title-font'>Pixie</span> <span class='embed'>Embedding</span> <br> <span class='author'>by Suprateem Banerjee</span>",
                 unsafe_allow_html=True
             )
-elif model.split(':')[0] in reasoning_models:
+elif model.split(':')[0] in ss.model_repository[ModelType.REASON]:
     model_type = ModelType.REASON
     file_types = ['csv']
     c1.markdown(
                 "<span class='my-title-font'>Pixie</span> <span class='reason'>Reason</span> <br> <span class='author'>by Suprateem Banerjee</span>",
                 unsafe_allow_html=True
             )
-elif model.split(':')[0] in vision_models:
+elif model.split(':')[0] in ss.model_repository[ModelType.VISION]:
     model_type = ModelType.VISION
     file_types = ['jpg', 'jpeg', 'png']
     c1.markdown(
@@ -203,7 +316,7 @@ if 'upload_history' not in ss:
     ss['upload_history'] = []
 
 if file_types:
-    uploaded_file = st.sidebar.file_uploader('', type=file_types)
+    uploaded_file = st.sidebar.file_uploader('Upload Files', type=file_types, label_visibility='collapsed')
 
     if uploaded_file:
         if len(ss.upload_history) == 0:
@@ -220,9 +333,12 @@ if file_types:
                 ss[model][ss.active_context]['image'] = buffered.getvalue()
 
 chats = st.sidebar.container(border=True)
+c1, c2 = chats.columns([9,1])
 
 for chat_name in list(ss[model].keys()):
-    chats.button(chat_name, type='tertiary', on_click=context_switch, kwargs={'context_name': chat_name})
+    c1.button(chat_name, type='tertiary', on_click=context_switch, kwargs={'context_name': chat_name})
+    # TODO: Implement chat deletion
+    c2. button('×', type='tertiary', key=f'close_{chat_name}')
 
 if 'image' in ss[model][ss.active_context]:
     st.image(ss[model][ss.active_context]['image'], caption='Uploaded Image')
