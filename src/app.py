@@ -299,18 +299,18 @@ st.sidebar.text_area(label='System Prompt',
                      key='system_prompt_area', 
                      value=st.session_state.system_prompt)
 
-sc1, sc2 = st.sidebar.columns([1,1])
+# sc1, sc2 = st.sidebar.columns([1,1])
 
-if sc1.button('Executive Assistant'):
-    ss.system_prompt = system_prompt_ea
+# if sc1.button('Executive Assistant'):
+#     ss.system_prompt = system_prompt_ea
     
-    ss[model][ss.active_context]['messages'][0] = {'role': 'system', 'content': ss.system_prompt}
-    st.rerun()
+#     ss[model][ss.active_context]['messages'][0] = {'role': 'system', 'content': ss.system_prompt}
+#     st.rerun()
 
-if sc2.button('Coding Assistant'):
-    ss.system_prompt = system_prompt_ca
-    ss[model][ss.active_context]['messages'][0] = {'role': 'system', 'content': ss.system_prompt}
-    st.rerun()
+# if sc2.button('Coding Assistant'):
+#     ss.system_prompt = system_prompt_ca
+#     ss[model][ss.active_context]['messages'][0] = {'role': 'system', 'content': ss.system_prompt}
+#     st.rerun()
 
 if 'upload_history' not in ss:
     ss['upload_history'] = []
@@ -335,10 +335,16 @@ if file_types:
 chats = st.sidebar.container(border=True)
 c1, c2 = chats.columns([9,1])
 
-for chat_name in list(ss[model].keys()):
-    c1.button(chat_name, type='tertiary', on_click=context_switch, kwargs={'context_name': chat_name})
-    # TODO: Implement chat deletion
-    c2. button('×', type='tertiary', key=f'close_{chat_name}')
+def delete_context(context:str):
+    if len(ss[model]) > 1:
+        ss[model].pop(context)
+        ss.active_context = 'New Chat'
+    else:
+        refresh()
+
+for context in list(ss[model].keys()):
+    c1.button(context, type='tertiary', on_click=context_switch, kwargs={'context_name': context})
+    c2.button('×', type='tertiary', key=f'close_{context}', on_click=delete_context, kwargs={'context': context})
 
 if 'image' in ss[model][ss.active_context]:
     st.image(ss[model][ss.active_context]['image'], caption='Uploaded Image')
