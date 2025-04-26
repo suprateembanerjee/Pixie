@@ -64,61 +64,94 @@ st.markdown(
 models = sorted([model['model'] for model in ollama.list()['models']])
 if 'base_llm' not in ss:
     ss.base_llm = 'llama3.1:8b'
-ss.db = {'model_repo': 'model_repository.db'}
+ss.db = {'persistent_repository': 'persistent_repository.db'}
 
-if 'model_repository' not in ss:
-    # Intialize Repository
-    ss['model_repository'] = {}
-    ss.model_repository[ModelType.REASON] = []
-    ss.model_repository[ModelType.CHAT] = []
-    ss.model_repository[ModelType.EMBED] = []
-    ss.model_repository[ModelType.VISION] = []
-    try:
-        conn = lite.connect(f'file:{ss.db['model_repo']}?mode=rw', uri=True)
+def update_db(table:str):
+    if table == 'models':
+        conn = lite.connect(f'file:{ss.db['persistent_repository']}?mode=rw', uri=True)
         cursor = conn.cursor()
-        cursor.execute('SELECT * FROM models')
-        models_ = cursor.fetchall()
-
-        for model_, type_ in models_:
-            ss.model_repository[ModelType(type_)].append(model_)
-
-    except lite.OperationalError:
-        # Create Repository
-        conn = lite.connect(ss.db['model_repo'])
-        cursor = conn.cursor()
-        cursor.execute('''CREATE TABLE IF NOT EXISTS models (model TEXT, type TEXT)''')
-        ss.model_repository[ModelType.REASON] = []
-        ss.model_repository[ModelType.CHAT] = []
-        ss.model_repository[ModelType.EMBED] = []
-        ss.model_repository[ModelType.VISION] = []
-
-        with st.spinner('Creating Model Repository...', show_time=True):
-
-            for model in models:
-                summary = scrape_ollama_model(model)
-                model_type = ollama.chat(model=ss.base_llm, 
-                                        messages=[{'role': 'system', 
-                                                    'content': 'Pick the correct type of model based on description'},
-                                                    {'role':'user',
-                                                    'content':summary}],
-                                        format=Type.model_json_schema())['message']['content']
-                model_type = ModelType(json.loads(model_type)['model_type'])
-                ss.model_repository[ModelType(model_type)].append(model.split(':')[0])
-                cursor.execute(f"INSERT INTO models (model, type) VALUES ('{model.split(':')[0]}', '{model_type.value}')")
+        cursor.execute('''DROP TABLE IF EXISTS models''')
+        cursor.execute('''CREATE TABLE models (model TEXT, type TEXT)''')
+        for model_type, model_families in ss.model_repository.items():
+            for model_family in model_families:
+                cursor.execute(f"INSERT INTO models (model, type) VALUES ('{model_family}', '{model_type.value}')")
         conn.commit()
         conn.close()
 
-def update_db():
-    conn = lite.connect(f'file:{ss.db['model_repo']}?mode=rw', uri=True)
-    cursor = conn.cursor()
-    cursor.execute('''DROP TABLE IF EXISTS models''')
-    cursor.execute('''CREATE TABLE models (model TEXT, type TEXT)''')
-    for model_type, model_families in ss.model_repository.items():
-        for model_family in model_families:
-            cursor.execute(f"INSERT INTO models (model, type) VALUES ('{model_family}', '{model_type.value}')")
-    conn.commit()
-    conn.close()
+    elif table == 'context':
+        conn = lite.connect(f'file:{ss.db['persistent_repository']}?mode=rw', uri=True)
+        cursor = conn.cursor()
+        cursor.execute('''DROP TABLE IF EXISTS context''')
+        cursor.execute('''CREATE TABLE context (model TEXT, context TEXT, message TEXT)''')
+        for model in ss.messages:
+            for context, messages in ss.messages[model].items():
+                cursor.execute(f'INSERT INTO context (model, context, message) VALUES (?, ?, ?)', (model, context, json.dumps(messages)))
+        conn.commit()
+        conn.close()
 
+def load_from_db(table:str) -> dict:
+    if table == 'models':
+        # Intialize Repository
+        model_repository = {}
+        model_repository[ModelType.REASON] = []
+        model_repository[ModelType.CHAT] = []
+        model_repository[ModelType.EMBED] = []
+        model_repository[ModelType.VISION] = []
+        try:
+            conn = lite.connect(f'file:{ss.db['persistent_repository']}?mode=rw', uri=True)
+            cursor = conn.cursor()
+            cursor.execute('SELECT * FROM models')
+            models_ = cursor.fetchall()
+
+            for model_, type_ in models_:
+                model_repository[ModelType(type_)].append(model_)
+
+        except lite.OperationalError:
+            # Create Repository
+            conn = lite.connect(ss.db['persistent_repository'])
+            cursor = conn.cursor()
+            cursor.execute('''CREATE TABLE IF NOT EXISTS models (model TEXT, type TEXT)''')
+
+            with st.spinner('Creating Model Repository...', show_time=True):
+                for model in models:
+                    summary = scrape_ollama_model(model)
+                    model_type = ollama.chat(model=ss.base_llm, 
+                                            messages=[{'role': 'system', 
+                                                        'content': 'Pick the correct type of model based on description'},
+                                                        {'role':'user',
+                                                        'content':summary}],
+                                            format=Type.model_json_schema())['message']['content']
+                    model_type = ModelType(json.loads(model_type)['model_type'])
+                    model_repository[ModelType(model_type)].append(model.split(':')[0])
+                    cursor.execute(f"INSERT INTO models (model, type) VALUES ('{model.split(':')[0]}', '{model_type.value}')")
+            conn.commit()
+            conn.close()
+
+        return model_repository
+
+    elif table == 'context':
+        conn = lite.connect(f'file:{ss.db['persistent_repository']}?mode=rw', uri=True)
+        cursor = conn.cursor()
+        messages = {}
+        cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='context';")
+        if cursor.fetchone():
+            cursor.execute('SELECT * FROM context')
+            contexts = cursor.fetchall()
+            for model_, context_, messages_ in contexts:
+                if model_ not in messages:
+                    messages[model_] = {}
+                if context_ not in messages[model_]:
+                    messages[model_][context_] = json.loads(messages_)
+        conn.commit()
+        conn.close()
+
+        return messages
+
+if 'model_repository' not in ss:
+    ss['model_repository'] = load_from_db(table='models')
+
+if 'messages' not in ss:
+    ss['messages'] = load_from_db('context')
 
 with st.sidebar.popover('Manage Models'):
     model_family = st.selectbox('Model', options=get_models())
@@ -148,7 +181,7 @@ with st.sidebar.popover('Manage Models'):
                 if model_family not in ss.model_repository[model_type]:
                     ss.model_repository[model_type].append(model_family)
 
-            update_db()
+            update_db(table='models')
             st.success('Done!')
             st.rerun()
         else:
@@ -175,7 +208,7 @@ with st.sidebar.popover('Manage Models'):
                         break
                 ss.model_repository[model_type].remove(model_family)
 
-            update_db()
+            update_db(table='models')
             st.success('Done!')
             st.rerun()
         else:
@@ -213,21 +246,22 @@ with st.sidebar.popover('Manage Models'):
     
     if ss.model_repository != model_repository:
         ss.model_repository = model_repository
-        update_db()
+        update_db(table='models')
 
 model = st.sidebar.selectbox('Choose a model', models, index=0)
-
-if 'active_context' not in ss:
-    ss['active_context'] = 'New Chat'
 
 if 'system_prompt' not in ss:
     ss.system_prompt = system_prompt_ea
 
-if model not in st.session_state:
-    ss[model] = {ss.active_context: {'messages': [{'role': 'system', 'content': ss.system_prompt}]}}
+if 'active_context' not in ss:
+    ss['active_context'] = 'New Chat'
+
+if model not in ss.messages:
+    ss.active_context = 'New Chat'
+    ss.messages[model] = {ss.active_context: {'messages': [{'role': 'system', 'content': ss.system_prompt}]}}
 
 def refresh(context_name='New Chat'):
-    ss[model][context_name] = {'messages': [ss[model][context_name]['messages'][0]]}
+    ss.messages[model][context_name] = {'messages': [ss.messages[model][context_name]['messages'][0]]}
 
 def name_context(messages):
     messages = messages + [{'role': 'user', 
@@ -236,20 +270,21 @@ def name_context(messages):
 
 def context_switch(context_name:str):
 
-    if context_name not in ss[model]:
+    if context_name not in ss.messages[model]:
         new_context()
     else:
         st.session_state.active_context = context_name
+        update_db(table='context')
 
 def new_context():
     # Save Old Context
-    messages = [message for message in ss[model][ss.active_context]['messages'] if message['role'] in ['user', 'assistant']]
-    image = ss[model][ss.active_context].get('image', None)
+    messages = [message for message in ss.messages[model][ss.active_context]['messages'] if message['role'] in ['user', 'assistant']]
+    image = ss.messages[model][ss.active_context].get('image', None)
     if len(messages) > 0:
         context_name = name_context(messages)
-        ss[model][context_name]= {'messages': messages}
+        ss.messages[model][context_name]= {'messages': messages}
         if image:
-            ss[model][context_name]['image'] = image
+            ss.messages[model][context_name]['image'] = image
 
     # Create New Context
     refresh('New Chat')
@@ -299,19 +334,6 @@ st.sidebar.text_area(label='System Prompt',
                      key='system_prompt_area', 
                      value=st.session_state.system_prompt)
 
-# sc1, sc2 = st.sidebar.columns([1,1])
-
-# if sc1.button('Executive Assistant'):
-#     ss.system_prompt = system_prompt_ea
-    
-#     ss[model][ss.active_context]['messages'][0] = {'role': 'system', 'content': ss.system_prompt}
-#     st.rerun()
-
-# if sc2.button('Coding Assistant'):
-#     ss.system_prompt = system_prompt_ca
-#     ss[model][ss.active_context]['messages'][0] = {'role': 'system', 'content': ss.system_prompt}
-#     st.rerun()
-
 if 'upload_history' not in ss:
     ss['upload_history'] = []
 
@@ -325,31 +347,32 @@ if file_types:
             ss.upload_history.append(uploaded_file)
             new_context()
         if model_type == ModelType.VISION:
-            if 'image' not in ss[model][ss.active_context]:
+            if 'image' not in ss.messages[model][ss.active_context]:
                 img = Image.open(uploaded_file)
                 img = ImageOps.contain(img, (800, 800))
                 buffered = BytesIO()
                 img.save(buffered, format='JPEG')
-                ss[model][ss.active_context]['image'] = buffered.getvalue()
+                ss.messages[model][ss.active_context]['image'] = buffered.getvalue()
 
 chats = st.sidebar.container(border=True)
 c1, c2 = chats.columns([9,1])
 
 def delete_context(context:str):
-    if len(ss[model]) > 1:
-        ss[model].pop(context)
+    if len(ss.messages[model]) > 1:
+        ss.messages[model].pop(context)
+        update_db(table='context')
         ss.active_context = 'New Chat'
     else:
         refresh()
 
-for context in list(ss[model].keys()):
+for context in list(ss.messages[model].keys()):
     c1.button(context, type='tertiary', on_click=context_switch, kwargs={'context_name': context})
     c2.button('×', type='tertiary', key=f'close_{context}', on_click=delete_context, kwargs={'context': context})
 
-if 'image' in ss[model][ss.active_context]:
-    st.image(ss[model][ss.active_context]['image'], caption='Uploaded Image')
+if 'image' in ss.messages[model][ss.active_context]:
+    st.image(ss.messages[model][ss.active_context]['image'], caption='Uploaded Image')
 
-for message in ss[model][ss.active_context]['messages']:
+for message in ss.messages[model][ss.active_context]['messages']:
     if message['role'] in ['user', 'assistant']:
         with st.chat_message(message['role']):
             st.markdown(message['content'])
@@ -371,10 +394,10 @@ if user_input:
                                     height=500)
             
     elif model_type == ModelType.REASON:
-        if ss[model][ss.active_context]['messages'][0] != ss.system_prompt_area:
-            ss[model][ss.active_context]['messages'][0] = {'role': 'system', 'content': ss.system_prompt_area}
+        if ss.messages[model][ss.active_context]['messages'][0] != ss.system_prompt_area:
+            ss.messages[model][ss.active_context]['messages'][0] = {'role': 'system', 'content': ss.system_prompt_area}
         
-        ss[model][ss.active_context]['messages'].append({'role': 'user', 'content': user_input})
+        ss.messages[model][ss.active_context]['messages'].append({'role': 'user', 'content': user_input})
         with st.chat_message('user'):
             st.markdown(user_input)
 
@@ -384,7 +407,7 @@ if user_input:
             response_text = ''
             start_time = time.time()
             
-            stream = ollama.chat(model=model, messages=ss[model][ss.active_context]['messages'], stream=True)
+            stream = ollama.chat(model=model, messages=ss.messages[model][ss.active_context]['messages'], stream=True)
 
             for chunk in stream:
 
@@ -401,17 +424,17 @@ if user_input:
             tps = (chunk['eval_count']) / (chunk['eval_duration'] / 1e9)
             st.caption(f'⏱️ {chunk['total_duration'] / 1e9:.2f} seconds ({tps:.2f} tokens / sec)')
         
-        ss[model][ss.active_context]['messages'].append({'role': 'assistant', 'content': response})
+        ss.messages[model][ss.active_context]['messages'].append({'role': 'assistant', 'content': response})
     
     elif model_type == ModelType.VISION:
 
-        if ss[model][ss.active_context]['messages'][0] != ss.system_prompt_area:
-            ss[model][ss.active_context]['messages'][0] = {'role': 'system', 'content': ss.system_prompt_area}
+        if ss.messages[model][ss.active_context]['messages'][0] != ss.system_prompt_area:
+            ss.messages[model][ss.active_context]['messages'][0] = {'role': 'system', 'content': ss.system_prompt_area}
         
-        ss[model][ss.active_context]['messages'].append({'role': 'user', 
+        ss.messages[model][ss.active_context]['messages'].append({'role': 'user', 
                                                          'content': user_input, 
-                                                         'images': [ss[model][ss.active_context]['image']] 
-                                                         if 'image' in ss[model][ss.active_context] else None})
+                                                         'images': [ss.messages[model][ss.active_context]['image']] 
+                                                         if 'image' in ss.messages[model][ss.active_context] else None})
         
         with st.chat_message('user'):
             st.markdown(user_input)
@@ -421,7 +444,7 @@ if user_input:
             response_text = ''
 
             stream = ollama.chat(model=model,
-                                 messages=ss[model][ss.active_context]['messages'],
+                                 messages=ss.messages[model][ss.active_context]['messages'],
                                  stream=True)
             
             for chunk in stream:
@@ -433,14 +456,14 @@ if user_input:
             tps = (chunk['eval_count']) / (chunk['eval_duration'] / 1e9)
             st.caption(f'⏱️ {chunk['total_duration'] / 1e9:.2f} seconds ({tps:.2f} tokens / sec)')
         
-        ss[model][ss.active_context]['messages'].append({'role': 'assistant', 'content': response_text})
+        ss.messages[model][ss.active_context]['messages'].append({'role': 'assistant', 'content': response_text})
             
     else:
 
-        if ss[model][ss.active_context]['messages'][0] != ss.system_prompt_area:
-            ss[model][ss.active_context]['messages'][0] = {'role': 'system', 'content': ss.system_prompt_area}
+        if ss.messages[model][ss.active_context]['messages'][0] != ss.system_prompt_area:
+            ss.messages[model][ss.active_context]['messages'][0] = {'role': 'system', 'content': ss.system_prompt_area}
         
-        ss[model][ss.active_context]['messages'].append({'role': 'user', 'content': user_input})
+        ss.messages[model][ss.active_context]['messages'].append({'role': 'user', 'content': user_input})
         with st.chat_message('user'):
             st.markdown(user_input)
 
@@ -451,7 +474,7 @@ if user_input:
 
             stream = ollama.chat(model=model, messages=[
                     {'role': message['role'], 'content': message['content']}
-                    for message in ss[model][ss.active_context]['messages']
+                    for message in ss.messages[model][ss.active_context]['messages']
                 ], stream=True)
 
             for chunk in stream:
@@ -464,4 +487,4 @@ if user_input:
             st.caption(f'⏱️ {chunk['total_duration'] / 1e9:.2f} seconds ({tps:.2f} tokens / sec)')
 
 
-        ss[model][ss.active_context]['messages'].append({'role': 'assistant', 'content': response_text})
+        ss.messages[model][ss.active_context]['messages'].append({'role': 'assistant', 'content': response_text})
