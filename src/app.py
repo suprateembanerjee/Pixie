@@ -196,7 +196,7 @@ if ss.active_context not in ss.messages[ss.model]:
     ss.active_context = 'New Chat'
 
 def refresh(context_name='New Chat'):
-    ss.messages[ss.model][context_name] = {'messages': [ss.messages[ss.model][context_name]['messages'][0]]}
+    ss.messages[ss.model][context_name] = {'messages': [{'role': 'system', 'content': ss.system_prompt}]}
 
 def name_context(messages):
     messages = messages + [{'role': 'user', 
@@ -212,14 +212,18 @@ def context_switch(context_name:str):
         update_db(table='context', messages=ss.messages, db_name=ss.db['persistent_repository'])
 
 def new_context():
+    # If active context is not new context, switch to new context
+    if ss.active_context != 'New Chat':
+        ss.active_context = 'New Chat'
     # Save Old Context
-    messages = [message for message in ss.messages[ss.model][ss.active_context]['messages'] if message['role'] in ['user', 'assistant']]
-    image = ss.messages[ss.model][ss.active_context].get('image', None)
-    if len(messages) > 0:
-        context_name = name_context(messages)
-        ss.messages[ss.model][context_name]= {'messages': messages}
-        if image:
-            ss.messages[ss.model][context_name]['image'] = image
+    if len(ss.messages[ss.model][ss.active_context]['messages']) > 1:
+        messages = [message for message in ss.messages[ss.model][ss.active_context]['messages'] if message['role'] in ['user', 'assistant']]
+        image = ss.messages[ss.model][ss.active_context].get('image', None)
+        if len(messages) > 0:
+            context_name = name_context(messages)
+            ss.messages[ss.model][context_name]= {'messages': messages}
+            if image:
+                ss.messages[ss.model][context_name]['image'] = image
 
     # Create New Context
     refresh('New Chat')
@@ -321,9 +325,15 @@ def apply_edit_context():
 def reset_edit_context():
     ss.context_to_edit = None
 
-for context in list(ss.messages[ss.model].keys()):
-    if ss.context_to_edit == context:
-        new_name = c1.text_input('', value=context, key=f'rename_input_{context}', label_visibility='collapsed', on_change=apply_edit_context)
+for context in ss.messages[ss.model]:
+    if context == 'New Chat':
+        c1.button(context, type='tertiary', on_click=context_switch, kwargs={'context_name': context})
+        c2.button('', type='tertiary', key=f'edit_{context}')
+        c3.button('', type='tertiary', key=f'close_{context}')
+    elif ss.context_to_edit == context:
+        c1.text_input('', value=context, key=f'rename_input_{context}', label_visibility='collapsed', on_change=apply_edit_context)
+        c2.button('', type='tertiary', key=f'edit_{context}')
+        c3.button('', type='tertiary', key=f'close_{context}')
     else:
         c1.button(context, type='tertiary', on_click=context_switch, kwargs={'context_name': context})
         c2.button('✎', type='tertiary', key=f'edit_{context}', on_click=edit_context, kwargs={'context': context})
