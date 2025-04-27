@@ -290,7 +290,13 @@ if file_types:
                 ss.messages[ss.model][ss.active_context]['image'] = base64.b64encode(buffered.getvalue()).decode('utf-8')
 
 chats = st.sidebar.container(border=True)
-c1, c2 = chats.columns([9,1])
+c1, c2, c3 = chats.columns([8,1,1])
+
+if 'context_to_edit' not in ss:
+    ss.context_to_edit = None
+
+if 'context_edit_values' not in ss:
+    ss.context_edit_values = {}
 
 def delete_context(context:str):
     if len(ss.messages[ss.model]) > 1:
@@ -300,9 +306,28 @@ def delete_context(context:str):
     else:
         refresh()
 
+def edit_context(context:str):
+    ss.context_to_edit = context
+
+def apply_edit_context():
+    old_context = ss.context_to_edit
+    new_context_name = ss[f'rename_input_{old_context}']
+    if old_context and new_context_name:
+        ss.messages[ss.model][new_context_name] = ss.messages[ss.model].pop(old_context)
+        ss.active_context = new_context_name
+        update_db(table='context', messages=ss.messages, db_name=ss.db['persistent_repository'])
+    ss.context_to_edit = None
+
+def reset_edit_context():
+    ss.context_to_edit = None
+
 for context in list(ss.messages[ss.model].keys()):
-    c1.button(context, type='tertiary', on_click=context_switch, kwargs={'context_name': context})
-    c2.button('×', type='tertiary', key=f'close_{context}', on_click=delete_context, kwargs={'context': context})
+    if ss.context_to_edit == context:
+        new_name = c1.text_input('', value=context, key=f'rename_input_{context}', label_visibility='collapsed', on_change=apply_edit_context)
+    else:
+        c1.button(context, type='tertiary', on_click=context_switch, kwargs={'context_name': context})
+        c2.button('✎', type='tertiary', key=f'edit_{context}', on_click=edit_context, kwargs={'context': context})
+        c3.button('×', type='tertiary', key=f'close_{context}', on_click=delete_context, kwargs={'context': context})
 
 if 'image' in ss.messages[ss.model][ss.active_context]:
     st.image(base64.b64decode(ss.messages[ss.model][ss.active_context]['image']), caption='Uploaded Image')
