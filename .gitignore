@@ -5,5 +5,5 @@
 .DS_Store
 
 experiments.ipynb
-model_repository.db
 /src/ollama_models.json
+persistent_repository.db

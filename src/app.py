@@ -8,6 +8,7 @@ from io import BytesIO
 import pandas as pd
 import json
 import sqlite3 as lite
+import base64
 from urllib.request import pathname2url
 
 from prompts import system_prompt_ea, system_prompt_ca
@@ -17,6 +18,7 @@ from models import Type
 from exceptions import InsufficientArgumentsException
 
 st.set_page_config(page_title='Pixie', layout='wide')
+Image.MAX_IMAGE_PIXELS = None
 
 # Styling
 st.markdown(
@@ -66,7 +68,7 @@ models = sorted([model['model'] for model in ollama.list()['models']])
 
 if 'base_llm' not in ss:
     ss.base_llm = 'llama3.1:8b'
-    
+
 ss.db = {'persistent_repository': 'persistent_repository.db'}
 
 if 'model_repository' not in ss:
@@ -285,7 +287,7 @@ if file_types:
                 img = ImageOps.contain(img, (800, 800))
                 buffered = BytesIO()
                 img.save(buffered, format='JPEG')
-                ss.messages[ss.model][ss.active_context]['image'] = buffered.getvalue()
+                ss.messages[ss.model][ss.active_context]['image'] = base64.b64encode(buffered.getvalue()).decode('utf-8')
 
 chats = st.sidebar.container(border=True)
 c1, c2 = chats.columns([9,1])
@@ -303,7 +305,7 @@ for context in list(ss.messages[ss.model].keys()):
     c2.button('×', type='tertiary', key=f'close_{context}', on_click=delete_context, kwargs={'context': context})
 
 if 'image' in ss.messages[ss.model][ss.active_context]:
-    st.image(ss.messages[ss.model][ss.active_context]['image'], caption='Uploaded Image')
+    st.image(base64.b64decode(ss.messages[ss.model][ss.active_context]['image']), caption='Uploaded Image')
 
 for message in ss.messages[ss.model][ss.active_context]['messages']:
     if message['role'] in ['user', 'assistant']:
