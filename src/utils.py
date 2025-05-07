@@ -19,18 +19,22 @@ def get_models():
     return popular_models
 
 def get_tags(model):
-
     model_tags = []
-
-    response = requests.get(f'https://ollama.com/library/{model}/tags')
+    url = f'https://ollama.com/library/{model}/tags'
+    
+    response = requests.get(url)
     response.raise_for_status()
-    soup = BeautifulSoup(response.text, features='html.parser')
-    for a in soup.find_all('a'):
-        if not a['href'].startswith(f'/library/{model}:'):
-            continue
-        model_tags.append(f'{model}:{a.text.strip()}')
+    
+    soup = BeautifulSoup(response.text, 'html.parser')
+    
+    # Find all relevant anchor tags that match the pattern
+    for a in soup.select('a[href^="/library/{}:"]'.format(model)):
+        href = a['href']
+        tag = href.split(':')[-1].strip()  # get the part after the colon
+        if tag:
+            model_tags.append(f'{model}:{tag}')
 
-    return model_tags
+    return list(dict.fromkeys(model_tags))
 
 def scrape_ollama_model(model):
     # Send a GET request to the page

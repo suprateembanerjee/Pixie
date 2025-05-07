@@ -89,62 +89,69 @@ with st.sidebar.popover('Manage Models'):
     model_family = st.selectbox('Model', options=get_models())
     tag = st.selectbox('Tag', options=get_tags(model_family))
     c1, c2 = st.columns([1, 3])
-    if c1.button('Pull', disabled=tag in models):
-        with st.spinner('Pulling model...', show_time=True):
-            result =  ollama.pull(tag)
-        if result['status'] == 'success':
-            add_to_repository = True
+    try:
 
-            for model_type_, model_families in ss.model_repository.items():
-                if model_family in model_families:
-                    add_to_repository = False
-                    break
-            
-            if add_to_repository:
-                summary = scrape_ollama_model(tag)
-                model_type = ollama.chat(model=ss.base_llm, 
-                                        messages=[{'role': 'system', 
-                                                    'content': 'Pick the correct type of model based on description'},
-                                                    {'role':'user',
-                                                    'content':summary}],
-                                        format=Type.model_json_schema())['message']['content']
-                
-                model_type = ModelType(json.loads(model_type)['model_type'])
-                if model_family not in ss.model_repository[model_type]:
-                    ss.model_repository[model_type].append(model_family)
-
-            update_db(table='models', model_repository=ss.model_repository, db_name=ss.db['persistent_repository'])
-            st.success('Done!')
-            st.rerun()
-        else:
-            st.warning('Error!')
-    if c2.button('Remove', disabled=tag not in models):
-        with st.spinner('Removing model...', show_time=True):
-            result =  ollama.delete(tag)
-        if result['status'] == 'success': 
-
-            remove_from_repository = True
-            model_family = tag.split(':')[0]
-
-            for downloaded_model in ollama.list()['models']:
-                if model_family == downloaded_model['model'].split(':')[0]:
-                    remove_from_repository = False
-                    break
-
-            if remove_from_repository:
-                model_type = None
+        if c1.button('Pull', disabled=tag in models):
+            with st.spinner('Pulling model...', show_time=True):
+                result =  ollama.pull(tag)
+            if result['status'] == 'success':
+                add_to_repository = True
 
                 for model_type_, model_families in ss.model_repository.items():
                     if model_family in model_families:
-                        model_type = model_type_
+                        add_to_repository = False
                         break
-                ss.model_repository[model_type].remove(model_family)
+                
+                if add_to_repository:
+                    summary = scrape_ollama_model(tag)
+                    model_type = ollama.chat(model=ss.base_llm, 
+                                            messages=[{'role': 'system', 
+                                                        'content': 'Pick the correct type of model based on description'},
+                                                        {'role':'user',
+                                                        'content':summary}],
+                                            format=Type.model_json_schema())['message']['content']
+                    
+                    model_type = ModelType(json.loads(model_type)['model_type'])
+                    if model_family not in ss.model_repository[model_type]:
+                        ss.model_repository[model_type].append(model_family)
 
-            update_db(table='models', model_repository=ss.model_repository, db_name=ss.db['persistent_repository'])
-            st.success('Done!')
-            st.rerun()
-        else:
-            st.markdown('Error!')
+                update_db(table='models', model_repository=ss.model_repository, db_name=ss.db['persistent_repository'])
+                st.success('Done!')
+                st.rerun()
+            else:
+                st.warning('Error!')
+
+        if c2.button('Remove', disabled=tag not in models):
+            with st.spinner('Removing model...', show_time=True):
+                result =  ollama.delete(tag)
+            if result['status'] == 'success': 
+
+                remove_from_repository = True
+                model_family = tag.split(':')[0]
+
+                for downloaded_model in ollama.list()['models']:
+                    if model_family == downloaded_model['model'].split(':')[0]:
+                        remove_from_repository = False
+                        break
+
+                if remove_from_repository:
+                    model_type = None
+
+                    for model_type_, model_families in ss.model_repository.items():
+                        if model_family in model_families:
+                            model_type = model_type_
+                            break
+                    ss.model_repository[model_type].remove(model_family)
+
+                update_db(table='models', model_repository=ss.model_repository, db_name=ss.db['persistent_repository'])
+                st.success('Done!')
+                st.rerun()
+            else:
+                st.markdown('Error!')
+    except ollama._types.ResponseError as e:
+        if 'newer version' in str(e):
+            st.exception(e)
+            st.error('Please update Ollama!')
 
     st.divider()
 
@@ -212,20 +219,19 @@ def context_switch(context_name:str):
         update_db(table='context', messages=ss.messages, db_name=ss.db['persistent_repository'])
 
 def new_context():
-    # If active context is not new context, switch to new context
     if ss.active_context != 'New Chat':
         ss.active_context = 'New Chat'
-    # Save Old Context
     if len(ss.messages[ss.model][ss.active_context]['messages']) > 1:
         messages = [message for message in ss.messages[ss.model][ss.active_context]['messages'] if message['role'] in ['user', 'assistant']]
         image = ss.messages[ss.model][ss.active_context].get('image', None)
+        data = ss.messages[ss.model][ss.active_context].get('data', None)
         if len(messages) > 0:
             context_name = name_context(messages)
             ss.messages[ss.model][context_name]= {'messages': messages}
             if image:
                 ss.messages[ss.model][context_name]['image'] = image
-
-    # Create New Context
+            if data:
+                ss.messages[ss.model][context_name]['data'] = data
     refresh('New Chat')
     context_switch('New Chat')
 
@@ -292,6 +298,9 @@ if file_types:
                 buffered = BytesIO()
                 img.save(buffered, format='JPEG')
                 ss.messages[ss.model][ss.active_context]['image'] = base64.b64encode(buffered.getvalue()).decode('utf-8')
+        else:
+            if 'data' not in ss.messages[ss.model][ss.active_context]:
+                ss.messages[ss.model][ss.active_context]['data'] = pd.read_csv(uploaded_file).to_dict(orient='records')
 
 chats = st.sidebar.container(border=True)
 c1, c2, c3 = chats.columns([8,1,1])
@@ -341,6 +350,9 @@ for context in ss.messages[ss.model]:
 
 if 'image' in ss.messages[ss.model][ss.active_context]:
     st.image(base64.b64decode(ss.messages[ss.model][ss.active_context]['image']), caption='Uploaded Image')
+
+if 'data' in ss.messages[ss.model][ss.active_context]:
+    st.dataframe(pd.DataFrame.from_records(ss.messages[ss.model][ss.active_context]['data']))
 
 for message in ss.messages[ss.model][ss.active_context]['messages']:
     if message['role'] in ['user', 'assistant']:
@@ -428,10 +440,12 @@ if user_input:
         
         ss.messages[ss.model][ss.active_context]['messages'].append({'role': 'assistant', 'content': response_text})
             
-    else:
+    elif model_type == ModelType.CHAT:
 
         if ss.messages[ss.model][ss.active_context]['messages'][0] != ss.system_prompt_area:
             ss.messages[ss.model][ss.active_context]['messages'][0] = {'role': 'system', 'content': ss.system_prompt_area}
+            if 'data' in ss.messages[ss.model][ss.active_context]:
+                ss.messages[ss.model][ss.active_context]['messages'].append({'role': 'system', 'content': f'You have access to the following data: {pd.DataFrame.from_records(ss.messages[ss.model][ss.active_context]['data']).to_string()}'})
         
         ss.messages[ss.model][ss.active_context]['messages'].append({'role': 'user', 'content': user_input})
         with st.chat_message('user'):
