@@ -155,14 +155,6 @@ with st.sidebar.popover('Manage Models'):
 
     st.divider()
 
-    chat_models = []
-    for model_family in ss.model_repository[ModelType.CHAT]:
-        for candidate in models:
-            if candidate[:len(model_family)] == model_family:
-                chat_models.append(candidate)
-
-    st.selectbox(label='Base LLM', options=chat_models, index=chat_models.index(ss.base_llm), key='base_llm')
-
     rows = []
     for model_type, available_models in ss.model_repository.items():
         for model in list(set(available_models)):
@@ -186,6 +178,14 @@ with st.sidebar.popover('Manage Models'):
     if ss.model_repository != model_repository:
         ss.model_repository = model_repository
         update_db(table='models', model_repository=ss.model_repository, db_name=ss.db['persistent_repository'])
+    
+    chat_models = []
+    for model_family in ss.model_repository[ModelType.CHAT]:
+        for candidate in models:
+            if candidate[:len(model_family)] == model_family:
+                chat_models.append(candidate)
+
+    st.selectbox(label='Base LLM', options=chat_models, index=chat_models.index(ss.base_llm), key='base_llm')
 
 st.sidebar.selectbox('Choose a model', models, index=0, key='model')
 
@@ -253,21 +253,21 @@ if ss.model.split(':')[0] in ss.model_repository[ModelType.EMBED]:
             )
 elif ss.model.split(':')[0] in ss.model_repository[ModelType.REASON]:
     model_type = ModelType.REASON
-    file_types = ['csv']
+    file_types = ['csv', 'xls', 'xlsx', 'xlsb', 'xlsm', 'parquet']
     c1.markdown(
                 "<span class='my-title-font'>Pixie</span> <span class='reason'>Reason</span> <br> <span class='author'>by Suprateem Banerjee</span>",
                 unsafe_allow_html=True
             )
 elif ss.model.split(':')[0] in ss.model_repository[ModelType.VISION]:
     model_type = ModelType.VISION
-    file_types = ['jpg', 'jpeg', 'png']
+    file_types = ['jpg', 'jpeg', 'png', 'pdf']
     c1.markdown(
                 "<span class='my-title-font'>Pixie</span> <span class='vision'>Vision</span> <br> <span class='author'>by Suprateem Banerjee</span>",
                 unsafe_allow_html=True
             )
 else:
     model_type = ModelType.CHAT
-    file_types = ['csv']
+    file_types = ['csv', 'xls', 'xlsx', 'xlsb', 'xlsm', 'parquet']
     c1.markdown(
                 "<span class='my-title-font'>Pixie</span> <span class='chat'>Chat</span> <br> <span class='author'>by Suprateem Banerjee</span>",
                 unsafe_allow_html=True
@@ -300,7 +300,13 @@ if file_types:
                 ss.messages[ss.model][ss.active_context]['image'] = base64.b64encode(buffered.getvalue()).decode('utf-8')
         else:
             if 'data' not in ss.messages[ss.model][ss.active_context]:
-                ss.messages[ss.model][ss.active_context]['data'] = pd.read_csv(uploaded_file).to_dict(orient='records')
+                file_type = uploaded_file.name.split('.')[-1]
+                if file_type == 'csv':
+                    ss.messages[ss.model][ss.active_context]['data'] = pd.read_csv(uploaded_file).to_dict(orient='records')
+                elif file_type in ['xlsx', 'xls', 'xlsb', 'xlsm']:
+                    ss.messages[ss.model][ss.active_context]['data'] = pd.read_excel(uploaded_file).to_dict(orient='records')
+                elif file_type == 'parquet':
+                    ss.messages[ss.model][ss.active_context]['data'] = pd.read_parquet(uploaded_file).to_dict(orient='records')
 
 chats = st.sidebar.container(border=True)
 c1, c2, c3 = chats.columns([8,1,1])
@@ -378,6 +384,13 @@ if user_input:
     elif model_type == ModelType.REASON:
         if ss.messages[ss.model][ss.active_context]['messages'][0] != ss.system_prompt_area:
             ss.messages[ss.model][ss.active_context]['messages'][0] = {'role': 'system', 'content': ss.system_prompt_area}
+            if 'data' in ss.messages[ss.model][ss.active_context]:
+                ss.messages[ss.model][ss.active_context]['messages'].append(
+                    {'role': 'system', 
+                     'content': f'You have access to the following data: {pd.DataFrame.from_records(
+                         ss.messages[ss.model][ss.active_context]['data']
+                         ).to_string()}'})
+        
         
         ss.messages[ss.model][ss.active_context]['messages'].append({'role': 'user', 'content': user_input})
         with st.chat_message('user'):
@@ -445,7 +458,11 @@ if user_input:
         if ss.messages[ss.model][ss.active_context]['messages'][0] != ss.system_prompt_area:
             ss.messages[ss.model][ss.active_context]['messages'][0] = {'role': 'system', 'content': ss.system_prompt_area}
             if 'data' in ss.messages[ss.model][ss.active_context]:
-                ss.messages[ss.model][ss.active_context]['messages'].append({'role': 'system', 'content': f'You have access to the following data: {pd.DataFrame.from_records(ss.messages[ss.model][ss.active_context]['data']).to_string()}'})
+                ss.messages[ss.model][ss.active_context]['messages'].append({
+                    'role': 'system', 
+                    'content': f'You have access to the following data: {pd.DataFrame.from_records(
+                        ss.messages[ss.model][ss.active_context]['data']
+                        ).to_string()}'})
         
         ss.messages[ss.model][ss.active_context]['messages'].append({'role': 'user', 'content': user_input})
         with st.chat_message('user'):
