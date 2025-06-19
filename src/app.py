@@ -9,9 +9,9 @@ import pandas as pd
 import json
 import sqlite3 as lite
 import base64
-from urllib.request import pathname2url
+from pdf2image import convert_from_bytes
 
-from prompts import system_prompt_ea, system_prompt_ca
+from prompts import system_prompt_ea, system_prompt_ca, context_name_prompt
 from utils import get_models, get_tags, scrape_ollama_model, load_from_db, create_repository, update_db
 from enums import ModelType
 from models import Type
@@ -207,7 +207,7 @@ def refresh(context_name='New Chat'):
 
 def name_context(messages):
     messages = messages + [{'role': 'user', 
-                            'content': 'Generate a title for this conversation under 3 words. Do not return anything else.'}]
+                            'content': context_name_prompt}]
     return ollama.chat(model=ss.base_llm, messages=messages)['message']['content']
 
 def context_switch(context_name:str):
@@ -246,28 +246,28 @@ c3.button('♻️', type='tertiary', on_click=new_context)
 # Styling
 if ss.model.split(':')[0] in ss.model_repository[ModelType.EMBED]:
     model_type = ModelType.EMBED
-    file_types = None
+    allowed_file_types = None
     c1.markdown(
                 "<span class='my-title-font'>Pixie</span> <span class='embed'>Embedding</span> <br> <span class='author'>by Suprateem Banerjee</span>",
                 unsafe_allow_html=True
             )
 elif ss.model.split(':')[0] in ss.model_repository[ModelType.REASON]:
     model_type = ModelType.REASON
-    file_types = ['csv', 'xls', 'xlsx', 'xlsb', 'xlsm', 'parquet']
+    allowed_file_types = ['csv', 'xls', 'xlsx', 'xlsb', 'xlsm', 'parquet']
     c1.markdown(
                 "<span class='my-title-font'>Pixie</span> <span class='reason'>Reason</span> <br> <span class='author'>by Suprateem Banerjee</span>",
                 unsafe_allow_html=True
             )
 elif ss.model.split(':')[0] in ss.model_repository[ModelType.VISION]:
     model_type = ModelType.VISION
-    file_types = ['jpg', 'jpeg', 'png', 'pdf']
+    allowed_file_types = ['jpg', 'jpeg', 'png', 'pdf']
     c1.markdown(
                 "<span class='my-title-font'>Pixie</span> <span class='vision'>Vision</span> <br> <span class='author'>by Suprateem Banerjee</span>",
                 unsafe_allow_html=True
             )
 else:
     model_type = ModelType.CHAT
-    file_types = ['csv', 'xls', 'xlsx', 'xlsb', 'xlsm', 'parquet']
+    allowed_file_types = ['csv', 'xls', 'xlsx', 'xlsb', 'xlsm', 'parquet']
     c1.markdown(
                 "<span class='my-title-font'>Pixie</span> <span class='chat'>Chat</span> <br> <span class='author'>by Suprateem Banerjee</span>",
                 unsafe_allow_html=True
@@ -282,8 +282,8 @@ st.sidebar.text_area(label='System Prompt',
 if 'upload_history' not in ss:
     ss['upload_history'] = []
 
-if file_types:
-    uploaded_file = st.sidebar.file_uploader('Upload Files', type=file_types, label_visibility='collapsed')
+if allowed_file_types:
+    uploaded_file = st.sidebar.file_uploader('Upload Files', type=allowed_file_types, label_visibility='collapsed')
 
     if uploaded_file:
         if len(ss.upload_history) == 0:
@@ -291,16 +291,28 @@ if file_types:
         elif len(ss.upload_history) and ss.upload_history[-1] != uploaded_file:
             ss.upload_history.append(uploaded_file)
             new_context()
+        file_type = uploaded_file.name.split('.')[-1]
         if model_type == ModelType.VISION:
             if 'image' not in ss.messages[ss.model][ss.active_context]:
-                img = Image.open(uploaded_file)
-                img = ImageOps.contain(img, (800, 800))
-                buffered = BytesIO()
-                img.save(buffered, format='JPEG')
-                ss.messages[ss.model][ss.active_context]['image'] = base64.b64encode(buffered.getvalue()).decode('utf-8')
+                if file_type in ['jpg', 'jpeg', 'png']:
+                    img = Image.open(uploaded_file)
+                    img = ImageOps.contain(img, (800, 800))
+                    buffered = BytesIO()
+                    img.save(buffered, format='JPEG')
+                    ss.messages[ss.model][ss.active_context]['image'] = base64.b64encode(buffered.getvalue()).decode('utf-8')
+                if file_type == 'pdf':
+                    if 'pages' not in ss.messages[ss.model][ss.active_context]:
+                        pages = convert_from_bytes(uploaded_file.read(), size=(800, 800))
+                        ss.messages[ss.model][ss.active_context]['pages'] = []
+                        for page in pages:
+                            buf = BytesIO()
+                            page.save(buf, format='JPEG')
+                            ss.messages[ss.model][ss.active_context]['pages'].append(base64.b64encode(buf.getvalue()).decode('utf-8'))
+
+                    if 'current_page' not in ss.messages[ss.model][ss.active_context]:
+                        ss.messages[ss.model][ss.active_context]['current_page'] = 0
         else:
             if 'data' not in ss.messages[ss.model][ss.active_context]:
-                file_type = uploaded_file.name.split('.')[-1]
                 if file_type == 'csv':
                     ss.messages[ss.model][ss.active_context]['data'] = pd.read_csv(uploaded_file).to_dict(orient='records')
                 elif file_type in ['xlsx', 'xls', 'xlsb', 'xlsm']:
@@ -354,10 +366,28 @@ for context in ss.messages[ss.model]:
         c2.button('✎', type='tertiary', key=f'edit_{context}', on_click=edit_context, kwargs={'context': context})
         c3.button('×', type='tertiary', key=f'close_{context}', on_click=delete_context, kwargs={'context': context})
 
-if 'image' in ss.messages[ss.model][ss.active_context]:
+def next_page():
+    ss.messages[ss.model][ss.active_context]['current_page'] += 1
+
+def prev_page():
+    ss.messages[ss.model][ss.active_context]['current_page'] -= 1
+
+if 'pages' in ss.messages[ss.model][ss.active_context]:
+    c1, c2, c3 = st.columns([0.5, 9, 0.5])
+    for i in range(21):
+        c1.markdown('')
+        c3.markdown('')
+
+    if ss.messages[ss.model][ss.active_context]['current_page'] > 0:
+        c1.button('◀', type='tertiary', on_click=prev_page)
+    c2.image(base64.b64decode(ss.messages[ss.model][ss.active_context]['pages'][ss.messages[ss.model][ss.active_context]['current_page']]), caption='Uploaded Doc')
+    if ss.messages[ss.model][ss.active_context]['current_page'] < len(ss.messages[ss.model][ss.active_context]['pages']):
+        c3.button('▶', type='tertiary', on_click=next_page)
+
+elif 'image' in ss.messages[ss.model][ss.active_context]:
     st.image(base64.b64decode(ss.messages[ss.model][ss.active_context]['image']), caption='Uploaded Image')
 
-if 'data' in ss.messages[ss.model][ss.active_context]:
+elif 'data' in ss.messages[ss.model][ss.active_context]:
     st.dataframe(pd.DataFrame.from_records(ss.messages[ss.model][ss.active_context]['data']))
 
 for message in ss.messages[ss.model][ss.active_context]['messages']:
@@ -366,6 +396,23 @@ for message in ss.messages[ss.model][ss.active_context]['messages']:
             st.markdown(message['content'])
 
 user_input = st.chat_input('Type your message...')
+
+def concatenate_images(images):
+
+    images = [Image.open(BytesIO(base64.b64decode(b64))) for b64 in images]
+    widths, heights = zip(*(img.size for img in images))
+
+    total_width = max(widths)
+    total_height = sum(heights)
+    board = Image.new('RGB', (total_width, total_height), color='white')
+    y_offset = 0
+    for img in images:
+        board.paste(img, (0, y_offset))
+        y_offset += img.height
+
+    buf = BytesIO()
+    board.save(buf, format='JPEG')
+    return base64.b64encode(buf.getvalue()).decode('utf-8')
 
 if user_input:
 
@@ -425,11 +472,18 @@ if user_input:
 
         if ss.messages[ss.model][ss.active_context]['messages'][0] != ss.system_prompt_area:
             ss.messages[ss.model][ss.active_context]['messages'][0] = {'role': 'system', 'content': ss.system_prompt_area}
+
+        images = None
+        if 'image' in ss.messages[ss.model][ss.active_context]:
+            images = [ss.messages[ss.model][ss.active_context]['image']]
+        elif 'pages' in ss.messages[ss.model][ss.active_context]:
+            images = [ss.messages[ss.model][ss.active_context]['pages'][ss.messages[ss.model][ss.active_context]['current_page']]]
+            # images = [concatenate_images(ss.messages[ss.model][ss.active_context]['pages'])]
+
         
         ss.messages[ss.model][ss.active_context]['messages'].append({'role': 'user', 
                                                          'content': user_input, 
-                                                         'images': [ss.messages[ss.model][ss.active_context]['image']] 
-                                                         if 'image' in ss.messages[ss.model][ss.active_context] else None})
+                                                         'images': images})
         
         with st.chat_message('user'):
             st.markdown(user_input)

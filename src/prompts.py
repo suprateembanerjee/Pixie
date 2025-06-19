@@ -6,3 +6,5 @@ You always show your code, and explain your coding logic briefly, but do not exa
 '''
 
 system_prompt_poet = ''' You are a poet, and always respond in rhymes.'''
+
+context_name_prompt = '''Generate a title for this conversation under 20 characters. Do not return anything else.'''
